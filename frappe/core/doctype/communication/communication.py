@@ -348,8 +348,13 @@ def get_contacts(email_strings):
 
 	contacts = []
 	for email in email_addrs:
-		email = get_email_without_link(email)
-		contact_name = get_contact_name(email)
+		contact_name = None
+		try:
+			email = get_email_without_link(email)
+			contact_name = get_contact_name(email)
+		except:
+			#do nothing, get_email_without_link or get_contact_name failed
+			return contacts
 
 		try:
 			if not contact_name:
@@ -395,14 +400,15 @@ def parse_email(communication, email_strings):
 					try:
 						doctype = unquote(email.split(delimiter)[1])
 						docname = unquote(email.split(delimiter)[2])
+
+						if doctype and docname and frappe.db.exists(doctype, docname):
+						    communication.add_link(doctype, docname)
+
 					except:
 						# Unexpected format, other than `admin+doctype+docname@example.com`
 						# create errorlog and skip
-						frappe.log_error("could not extract doctype and docname from email and add to timeline link<br>:{0}".format(str(email_string)), 'parse_email')
+						frappe.log_error("could not extract doctype and docname from email and add to timeline link\n:{0}".format(str(email_string)), 'parse_email')
 						pass
-
-					if doctype and docname and frappe.db.exists(doctype, docname):
-						communication.add_link(doctype, docname)
 
 def get_email_without_link(email):
 	"""
