@@ -14,6 +14,7 @@ import frappe.permissions
 import frappe.share
 import re
 import json
+import urllib.parse
 
 from frappe.website.utils import is_signup_enabled
 from frappe.utils.background_jobs import enqueue
@@ -97,6 +98,8 @@ class User(Document):
 		create_contact(self, ignore_mandatory=True)
 		if self.name not in ('Administrator', 'Guest') and not self.user_image:
 			frappe.enqueue('frappe.core.doctype.user.user.update_gravatar', name=self.name)
+		# Update cached home settings
+		frappe.cache().hset('home_settings', self.name, frappe.parse_json(self.home_settings or '{}'))
 
 	def has_website_permission(self, ptype, user, verbose=False):
 		"""Returns true if current user is the session user"""
@@ -243,15 +246,31 @@ class User(Document):
 			(self.first_name and " " or '') + (self.last_name or '')
 
 	def password_reset_mail(self, link):
-		self.send_login_mail(_("Password Reset"),
-			"password_reset", {"link": link}, now=True)
+		password_reset_template = frappe.get_hooks("password_reset_template")
+		if password_reset_template:
+			template = password_reset_template[-1]
+		else:
+			template = "password_reset"
+		
+		password_reset_subject = frappe.get_hooks("password_reset_subject")
+		if password_reset_subject:
+			subject = password_reset_subject[-1]
+		else:
+			subject = _("Password Reset")
+		
+		self.send_login_mail(subject,
+			template, {"link": link}, now=True)
 
 	def send_welcome_mail_to_user(self):
 		from frappe.utils import get_url
 		link = self.reset_password()
 		subject = None
 		method = frappe.get_hooks("welcome_email")
-		if method:
+		welcome_email_template = frappe.get_hooks("welcome_email_template")
+		welcome_email_subject = frappe.get_hooks("welcome_email_subject")
+		if welcome_email_subject:
+			subject = welcome_email_subject[-1]
+		if method and not welcome_email_subject:
 			subject = frappe.get_attr(method[-1])()
 		if not subject:
 			site_name = frappe.db.get_default('site_name') or frappe.get_conf().get("site_name")
@@ -259,8 +278,12 @@ class User(Document):
 				subject = _("Welcome to {0}".format(site_name))
 			else:
 				subject = _("Complete Registration")
+		if welcome_email_template:
+			template = welcome_email_template[-1]
+		else:
+			template = "new_user"
 
-		self.send_login_mail(subject, "new_user",
+		self.send_login_mail(subject, template,
 				dict(
 					link=link,
 					site_url=get_url(),
@@ -530,7 +553,9 @@ def get_perm_info(role):
 	return get_all_perms(role)
 
 @frappe.whitelist(allow_guest=True)
-def update_password(new_password, logout_all_sessions=0, key=None, old_password=None):
+def update_password(new_password, logout_all_sessions=0, key=None, old_password=None, url_encoded=0):
+	if cint(url_encoded) == 1:
+		new_password = urllib.parse.unquote(new_password)
 	result = test_password_strength(new_password, key, old_password)
 	feedback = result.get("feedback", None)
 
@@ -604,11 +629,6 @@ def get_email_awaiting(user):
 		and parent = %(user)s""", {"user":user}, as_dict=1)
 	if waiting:
 		return waiting
-	else:
-		frappe.db.sql("""update `tabUser Email`
-				set awaiting_password =0
-				where parent = %(user)s""",{"user":user})
-		return False
 
 @frappe.whitelist(allow_guest=False)
 def set_email_password(email_account, user, password):
